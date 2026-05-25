@@ -14,6 +14,8 @@ import shutil
 import subprocess
 import threading
 import queue
+import uuid
+import tempfile
 import requests
 import pyperclip
 import html2text
@@ -668,8 +670,11 @@ summary:
             return
 
         # 调用排版管线转换 Word
-        escaped_md = file_path_md.replace(".md", "_escaped.md")
-        temp_docx = file_path_md.replace(".md", "_temp.docx")
+        # 【关键修复】临时文件使用安全的 UUID 路径，避免文章标题中的特殊字符（日文/方括号等）导致 pandoc 路径解析失败
+        safe_id = uuid.uuid4().hex[:12]
+        tmp_dir = tempfile.gettempdir()
+        escaped_md = os.path.join(tmp_dir, f"wcat_{safe_id}_escaped.md")
+        temp_docx  = os.path.join(tmp_dir, f"wcat_{safe_id}_temp.docx")
         
         try:
             # 1. 预处理 Markdown
