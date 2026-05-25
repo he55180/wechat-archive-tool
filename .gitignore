@@ -25,3 +25,11 @@ reports/
 *.docx_temp.docx
 _escaped.md
 _temp.docx
+
+# PyInstaller 打包产物（禁止提交）
+dist/
+build/
+*.spec
+
+# 内置 Pandoc 体积巨大，禁止提交至 git
+pandoc.exe

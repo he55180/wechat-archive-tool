@@ -12,6 +12,6 @@ google-generativeai>=0.8
 feedparser>=6.0
 python-dateutil>=2.8
 tenacity>=8.0
-# Word 排版管线（需单独安装 pandoc）
+# Word 排版管线（pandoc 已内置于打包程序；源码运行时需将 pandoc.exe 放同级目录或系统 PATH）
 lxml>=4.9
 python-docx>=0.8.11

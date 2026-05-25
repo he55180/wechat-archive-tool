@@ -429,6 +429,23 @@ class WechatGrabberApp(tk.Tk):
         except Exception as e:
             self.write_log(f"⚠️ 首次运行自动创建目录失败: {e}")
 
+        # 自动在桌面创建快捷方式（仅限打包后的 EXE 环境运行时触发，且仅首次创建）
+        try:
+            import win32com.client as wscript
+            shell = wscript.Dispatch("WScript.Shell")
+            shortcut_path = str(desktop_path / "微信公众号一键归档.lnk")
+            if not os.path.exists(shortcut_path) and getattr(sys, "frozen", False):
+                target_exe = sys.executable
+                shortcut = shell.CreateShortCut(shortcut_path)
+                shortcut.TargetPath = target_exe
+                shortcut.WorkingDirectory = os.path.dirname(target_exe)
+                shortcut.IconLocation = target_exe
+                shortcut.Description = "微信公众号一键归档系统 - 双击启动"
+                shortcut.save()
+                self.write_log("🖥️ 已在桌面自动创建『微信公众号一键归档』快捷方式！")
+        except Exception as e:
+            self.write_log(f"ℹ️ 桌面快捷方式创建跳过: {e}")
+
     def setup_paths_manual(self):
         """手动选择修改保存路径"""
         # 1. 引导选择 Word 保存路径
