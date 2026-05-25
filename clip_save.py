@@ -61,47 +61,29 @@ OBSIDIAN_BASE = config.get("obsidian_base_dir", "")
 def initialize_paths():
     global SAVE_DIR, OBSIDIAN_BASE
     if not SAVE_DIR:
-        print("="*50)
-        print("    首次启动：微信公众号一键归档系统路径配置")
-        print("="*50)
-        while True:
-            word_path = input("请输入【Word文档】保存目标文件夹的绝对路径 (必填): ").strip()
-            # 如果包含引号，自动去除
-            word_path = word_path.strip('"').strip("'")
-            if word_path:
-                if not os.path.exists(word_path):
-                    try:
-                        os.makedirs(word_path, exist_ok=True)
-                        SAVE_DIR = os.path.abspath(word_path)
-                        break
-                    except Exception as e:
-                        print(f"⚠️ 无法创建该目录: {e}，请重新输入！")
-                else:
-                    SAVE_DIR = os.path.abspath(word_path)
-                    break
-            else:
-                print("⚠️ 此项为必填项！")
-
-        obs_path = input("请输入【Obsidian库】主目录的绝对路径 (可选，直接回车则跳过): ").strip()
-        obs_path = obs_path.strip('"').strip("'")
-        if obs_path:
-            if not os.path.exists(obs_path):
-                try:
-                    os.makedirs(obs_path, exist_ok=True)
-                    OBSIDIAN_BASE = os.path.abspath(obs_path)
-                except Exception as e:
-                    print(f"⚠️ 无法创建该目录: {e}，将跳过同步。")
-                    OBSIDIAN_BASE = ""
-            else:
-                OBSIDIAN_BASE = os.path.abspath(obs_path)
-        else:
+        desktop_path = Path(os.path.expanduser("~/Desktop"))
+        default_save_dir = desktop_path / "微信公众号归档"
+        try:
+            default_save_dir.mkdir(parents=True, exist_ok=True)
+            SAVE_DIR = str(default_save_dir.resolve())
             OBSIDIAN_BASE = ""
-            print("ℹ️ 已选择跳过 Obsidian 归档同步。")
+            config["word_save_dir"] = SAVE_DIR
+            config["obsidian_base_dir"] = OBSIDIAN_BASE
+            save_config(config)
+            print("⚙️ 首次启动：已自动在桌面创建“微信公众号归档”文件夹作为保存路径！")
+        except Exception as e:
+            print(f"⚠️ 自动创建目录失败: {e}")
 
-        config["word_save_dir"] = SAVE_DIR
-        config["obsidian_base_dir"] = OBSIDIAN_BASE
-        save_config(config)
-        print("⚙️ 配置已成功保存到 config.json！\n")
+def get_pandoc_executable():
+    """获取内置或本地同级目录或系统环境中的 pandoc 路径"""
+    if hasattr(sys, "_MEIPASS"):
+        local_pandoc = os.path.join(sys._MEIPASS, "pandoc.exe")
+        if os.path.exists(local_pandoc):
+            return local_pandoc
+    local_pandoc_sibling = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pandoc.exe")
+    if os.path.exists(local_pandoc_sibling):
+        return local_pandoc_sibling
+    return "pandoc"
 
 # ===== 文章自动分类逻辑 =====
 CATEGORY_RULES = [
@@ -321,23 +303,19 @@ summary:
         temp_docx  = file_path_md.replace(".md", "_temp.docx")
 
         # Step 1: 预处理 Markdown
-        if PREPROCESS_PATH.exists():
-            try:
-                subprocess.run(
-                    [sys.executable, str(PREPROCESS_PATH), file_path_md, escaped_md],
-                    check=True, capture_output=True, text=True
-                )
-                print("   [1/3] Markdown 预处理完成")
-            except subprocess.CalledProcessError as e:
-                print(f"   [1/3] 预处理失败: {e.stderr}")
-                escaped_md = file_path_md
-                print("   ↳ 跳过预处理，使用原始 Markdown")
-        else:
+        try:
+            import preprocess_md
+            preprocess_md.preprocess_markdown(file_path_md, escaped_md)
+            print("   [1/3] Markdown 预处理完成")
+        except Exception as e:
+            print(f"   [1/3] 预处理失败: {e}")
             escaped_md = file_path_md
+            print("   ↳ 跳过预处理，使用原始 Markdown")
 
         # Step 2: Pandoc 转 docx
+        pandoc_bin = get_pandoc_executable()
         try:
-            pandoc_cmd = ["pandoc", escaped_md, "-o", temp_docx]
+            pandoc_cmd = [pandoc_bin, escaped_md, "-o", temp_docx]
             if GOLDEN_TEMPLATE.exists():
                 pandoc_cmd.extend(["--reference-doc", str(GOLDEN_TEMPLATE)])
             subprocess.run(pandoc_cmd, check=True, capture_output=True, text=True)
@@ -348,24 +326,20 @@ summary:
         except subprocess.CalledProcessError as e:
             print(f"   [2/3] Pandoc 失败: {e.stderr}")
             # 无模板重试
-            pandoc_cmd = ["pandoc", escaped_md, "-o", temp_docx]
+            pandoc_cmd = [pandoc_bin, escaped_md, "-o", temp_docx]
             subprocess.run(pandoc_cmd, check=True, capture_output=True, text=True)
             print("   ↳ 无模板重试成功")
 
         # Step 3: format_expert.py 精确排版
-        if FORMAT_EXPERT_PATH.exists():
-            try:
-                subprocess.run(
-                    [sys.executable, str(FORMAT_EXPERT_PATH), temp_docx, "-o", file_path_docx],
-                    check=True, capture_output=True, text=True
-                )
-                print("   [3/3] 排版处理完成")
-            except subprocess.CalledProcessError as e:
-                print(f"   [3/3] 排版失败: {e.stderr}")
-                shutil.copy(temp_docx, file_path_docx)
-                print("   ↳ 回退到基础 Pandoc 版本")
-        else:
+        try:
+            import format_expert
+            formatter = format_expert.DocumentFormatter(temp_docx, file_path_docx, add_pagenum=True)
+            formatter.format()
+            print("   [3/3] 排版处理完成")
+        except Exception as e:
+            print(f"   [3/3] 排版失败: {e}")
             shutil.copy(temp_docx, file_path_docx)
+            print("   ↳ 回退到基础 Pandoc 版本")
 
         # 清理临时文件
         for f in [escaped_md, temp_docx]:

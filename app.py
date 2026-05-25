@@ -197,195 +197,25 @@ def refresh_path():
     except Exception as e:
         print(f"动态更新环境变量 PATH 失败: {e}")
 
+def get_pandoc_executable():
+    """获取内置或本地同级目录或系统环境中的 pandoc 路径"""
+    # 1. 优先使用打包内置的 pandoc
+    if hasattr(sys, "_MEIPASS"):
+        local_pandoc = os.path.join(sys._MEIPASS, "pandoc.exe")
+        if os.path.exists(local_pandoc):
+            return local_pandoc
+    
+    # 2. 其次尝试脚本同级目录下的 pandoc.exe
+    local_pandoc_sibling = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pandoc.exe")
+    if os.path.exists(local_pandoc_sibling):
+        return local_pandoc_sibling
+
+    # 3. 最后回退使用系统 PATH 中的 pandoc
+    return "pandoc"
+
 def check_pandoc_installed():
-    """检测系统是否安装了 pandoc"""
-    refresh_path()
-    return shutil.which("pandoc") is not None
-
-# ================= Pandoc 引导安装对话框 =================
-class PandocInstallDialog(tk.Toplevel):
-    def __init__(self, parent):
-        super().__init__(parent)
-        self.parent = parent
-        self.title("环境配置引导")
-        self.geometry("500x400")
-        self.resizable(False, False)
-        self.configure(bg="#1e293b")
-        
-        # 模态交互
-        self.transient(parent)
-        self.grab_set()
-        
-        # 窗口居中
-        screen_width = self.winfo_screenwidth()
-        screen_height = self.winfo_screenheight()
-        x = (screen_width - 500) // 2
-        y = (screen_height - 400) // 2
-        self.geometry(f"500x400+{x}+{y}")
-        
-        self.install_process = None
-        self.setup_ui()
-        
-    def setup_ui(self):
-        # 标题提示
-        tk.Label(
-            self, 
-            text="⚠️ 未检测到 Pandoc 环境", 
-            font=("Microsoft YaHei", 13, "bold"), 
-            bg="#1e293b", 
-            fg="#f43f5e" # Rose 500
-        ).pack(pady=(20, 10))
-        
-        # 傻瓜化说明文本
-        msg_text = (
-            "检测到您的电脑尚未安装 Pandoc（文档转换工具）\n"
-            "安装非常简单，请按以下步骤操作：\n\n"
-            "第一步：点击下方「一键安装 Pandoc」按钮\n"
-            "第二步：屏幕会弹出一个黑色窗口，等待自动安装\n"
-            "第三步：看到\"安装成功\"字样后关闭黑色窗口\n"
-            "第四步：重新双击打开本程序即可使用\n\n"
-            "全程约 1-2 分钟，请保持网络连接"
-        )
-        
-        self.info_label = tk.Label(
-            self,
-            text=msg_text,
-            font=("Microsoft YaHei", 10),
-            bg="#0f172a", # Slate 900
-            fg="#f8fafc", # Slate 50
-            justify="left",
-            anchor="nw",
-            padx=18,
-            pady=18,
-            relief="flat",
-            wraplength=440
-        )
-        self.info_label.pack(fill="both", expand=True, padx=25, pady=10)
-        
-        # 底部操作栏
-        self.btn_frame = tk.Frame(self, bg="#1e293b")
-        self.btn_frame.pack(fill="x", side="bottom", pady=22)
-        
-        self.btn_install = tk.Button(
-            self.btn_frame,
-            text="一键安装 Pandoc",
-            command=self.start_install,
-            font=("Microsoft YaHei", 10, "bold"),
-            bg="#10b981", # Emerald 500
-            fg="#f8fafc",
-            relief="flat",
-            padx=15,
-            pady=6,
-            activebackground="#059669",
-            activeforeground="#f8fafc"
-        )
-        self.btn_install.pack(side="left", padx=(70, 20), expand=True)
-        add_hover(self.btn_install, "#10b981", "#059669")
-        
-        self.btn_later = tk.Button(
-            self.btn_frame,
-            text="稍后安装",
-            command=self.later_install,
-            font=("Microsoft YaHei", 10),
-            bg="#475569", # Slate 600
-            fg="#f8fafc",
-            relief="flat",
-            padx=20,
-            pady=6,
-            activebackground="#334155",
-            activeforeground="#f8fafc"
-        )
-        self.btn_later.pack(side="left", padx=(20, 70), expand=True)
-        add_hover(self.btn_later, "#475569", "#334155")
-        
-    def start_install(self):
-        self.btn_install.config(state="disabled", bg="#475569")
-        self.btn_later.config(state="disabled", bg="#475569")
-        
-        self.info_label.config(
-            text="\n\n正在安装，请稍候...\n\n系统正在尝试通过 winget 安装 Pandoc，请在弹出的黑色窗口中查看详细进度。",
-            fg="#38bdf8", # Sky 400
-            justify="center"
-        )
-        
-        try:
-            # 自动拉起 PowerShell 执行安装，并在完毕后暂停等待用户按键
-            self.install_process = subprocess.Popen(
-                ['powershell', '-Command', 'winget install jgm.pandoc; if ($LASTEXITCODE -ne 0) { exit 1 }'],
-                creationflags=subprocess.CREATE_NEW_CONSOLE
-            )
-            # 开启循环轮询检测
-            self.after(2000, self.check_loop)
-        except Exception as e:
-            messagebox.showerror("执行错误", f"无法唤起安装进程: {e}")
-            self.trigger_fallback()
-            
-    def check_loop(self):
-        # 刷新环境变量重新检查是否已安装
-        if check_pandoc_installed():
-            messagebox.showinfo("成功", "安装成功！程序即将启动。")
-            self.destroy()
-            return
-            
-        # 检查 PowerShell 进程是否已经关闭
-        if self.install_process and self.install_process.poll() is not None:
-            # 进程已结束但未成功检测到命令，判定为 winget 失败，自动进入双重兜底
-            self.trigger_fallback()
-            return
-            
-        # 每隔 2 秒循环检测一次
-        self.after(2000, self.check_loop)
-        
-    def trigger_fallback(self):
-        """自动切换至双重兜底：打开浏览器跳转官方页面并提示手动安装"""
-        # 1. 自动拉起浏览器，打开官方 Releases 页面
-        try:
-            webbrowser.open("https://github.com/jgm/pandoc/releases/latest")
-        except Exception:
-            pass
-        
-        # 2. 更改界面文案为手动安装指引
-        msg_text = (
-            "自动安装未成功，已为您打开 Pandoc 下载页面\n\n"
-            "请按以下步骤手动安装：\n"
-            "第一步：点击下载 pandoc-xxx-windows-x86_64.msi\n"
-            "第二步：双击下载的文件，一路点\"下一步\"\n"
-            "第三步：安装完成后重新启动本程序\n\n"
-            "安装包约 30MB，全程约 2 分钟"
-        )
-        self.info_label.config(text=msg_text, fg="#fb923c", justify="left") # Orange 400
-
-        # 3. 改变底部按钮栏为：“我已安装完成，重新启动”
-        for child in self.btn_frame.winfo_children():
-            child.destroy()
-            
-        btn_restart = tk.Button(
-            self.btn_frame,
-            text="我已安装完成，重新启动",
-            command=self.restart_app,
-            font=("Microsoft YaHei", 10, "bold"),
-            bg="#3b82f6", # Blue 500
-            fg="#f8fafc",
-            relief="flat",
-            padx=25,
-            pady=7,
-            activebackground="#2563eb",
-            activeforeground="#f8fafc"
-        )
-        btn_restart.pack(anchor="center")
-        add_hover(btn_restart, "#3b82f6", "#2563eb")
-
-    def restart_app(self):
-        """重新启动整个程序进程 (同时适配源码和打包 EXE 模式)"""
-        try:
-            subprocess.Popen([sys.executable] + sys.argv[1:])
-        except Exception:
-            pass
-        self.parent.destroy()
-        sys.exit(0)
-
-    def later_install(self):
-        self.destroy()
+    """由于内置了 Pandoc，此项始终为 True"""
+    return True
 
 # ================= GUI 主窗口 =================
 class WechatGrabberApp(tk.Tk):
@@ -425,13 +255,9 @@ class WechatGrabberApp(tk.Tk):
         self.word_save_dir = self.config.get("word_save_dir", "")
         self.obsidian_base_dir = self.config.get("obsidian_base_dir", "")
         
-        # 启动后检测是否包含 Pandoc
-        if not check_pandoc_installed():
-            self.after(300, self.show_pandoc_dialog)
-            
-        # 如果路径未设置，启动选择向导
+        # 如果路径未设置，直接在桌面创建默认文件夹并静默配置
         if not self.word_save_dir:
-            self.after(600, self.setup_paths_wizard)
+            self.setup_paths_default()
         else:
             self.write_log("⚙️ 配置已加载:")
             self.write_log(f"- Word 保存路径: {self.word_save_dir}")
@@ -439,10 +265,6 @@ class WechatGrabberApp(tk.Tk):
             
         # 启动后延迟读取剪贴板并尝试填入链接
         self.after(1000, self.auto_paste_clipboard)
-
-    def show_pandoc_dialog(self):
-        """展示 Pandoc 傻瓜化引导弹窗"""
-        PandocInstallDialog(self)
 
     def setup_ui(self):
         # 1. 顶部标题栏
@@ -455,7 +277,24 @@ class WechatGrabberApp(tk.Tk):
             bg=self.bg_color, 
             fg=self.accent_color
         )
-        title_label.pack()
+        title_label.pack(side="left", padx=(25, 0))
+
+        # ⚙️ 设置按钮 (挂载在右上角)
+        btn_settings = tk.Button(
+            header_frame, 
+            text="⚙️ 设置", 
+            command=self.setup_paths_manual,
+            font=("Microsoft YaHei", 9), 
+            bg=self.btn_bg, 
+            fg=self.text_color, 
+            relief="flat", 
+            padx=12, 
+            pady=4,
+            activebackground=self.btn_hover,
+            activeforeground=self.text_color
+        )
+        btn_settings.pack(side="right", padx=25)
+        add_hover(btn_settings, self.btn_bg, self.btn_hover)
 
         # 2. 链接输入栏
         input_frame = tk.Frame(self, bg=self.bg_color, padx=25, pady=5)
@@ -573,21 +412,34 @@ class WechatGrabberApp(tk.Tk):
         )
         self.status_bar.pack(fill="x", side="bottom")
 
-    def setup_paths_wizard(self):
-        """首次配置路径引导向导"""
-        messagebox.showinfo("初始化配置", "欢迎使用微信文章一键归档系统！\n首次启动请进行保存路径配置。")
-        
+    def setup_paths_default(self):
+        """首次启动：自动在桌面创建“微信公众号归档”作为保存路径"""
+        desktop_path = Path(os.path.expanduser("~/Desktop"))
+        default_save_dir = desktop_path / "微信公众号归档"
+        try:
+            default_save_dir.mkdir(parents=True, exist_ok=True)
+            self.word_save_dir = str(default_save_dir.resolve())
+            self.obsidian_base_dir = "" # 默认跳过
+            self.config["word_save_dir"] = self.word_save_dir
+            self.config["obsidian_base_dir"] = self.obsidian_base_dir
+            save_config(self.config)
+            self.write_log("⚙️ 首次运行自动配置已完成:")
+            self.write_log(f"- Word 默认保存路径: {self.word_save_dir}")
+            self.write_log("ℹ️ 已自动在桌面创建“微信公众号归档”文件夹，您可以在右上角「设置」中修改此路径。")
+        except Exception as e:
+            self.write_log(f"⚠️ 首次运行自动创建目录失败: {e}")
+
+    def setup_paths_manual(self):
+        """手动选择修改保存路径"""
         # 1. 引导选择 Word 保存路径
-        word_dir = filedialog.askdirectory(title="选择【Word文档】保存目标文件夹 (必填)")
+        word_dir = filedialog.askdirectory(title="选择【Word文档】保存目标文件夹")
         if not word_dir:
-            messagebox.showerror("配置错误", "未设置 Word 保存路径，程序将退出。")
-            self.destroy()
-            return
+            return # 取消
         
         # 2. 引导选择 Obsidian 归档路径 (可选)
         obsidian_dir = filedialog.askdirectory(title="选择【Obsidian库】的主目录文件夹 (可选，取消或直接关闭将不启用同步)")
         
-        # 3. 更新配置值并持久化
+        # 3. 更新配置值并保存
         self.word_save_dir = os.path.abspath(word_dir)
         self.obsidian_base_dir = os.path.abspath(obsidian_dir) if obsidian_dir else ""
         
@@ -595,9 +447,10 @@ class WechatGrabberApp(tk.Tk):
         self.config["obsidian_base_dir"] = self.obsidian_base_dir
         save_config(self.config)
         
-        self.write_log("⚙️ 路径配置已成功初始化并保存到 config.json:")
+        self.write_log("⚙️ 保存路径已更新:")
         self.write_log(f"- Word 保存路径: {self.word_save_dir}")
         self.write_log(f"- Obsidian 归档路径: {self.obsidian_base_dir or '未启用'}")
+        messagebox.showinfo("成功", "保存路径配置已成功更新！")
 
     def auto_paste_clipboard(self):
         """启动时自动读取剪贴板"""
@@ -666,14 +519,8 @@ class WechatGrabberApp(tk.Tk):
 
     def start_capture(self):
         """开始执行抓取工作"""
-        # 确保 Pandoc 环境在点击保存时依然畅通检测
-        if not check_pandoc_installed():
-            self.show_pandoc_dialog()
-            return
-
         if not self.word_save_dir:
-            self.setup_paths_wizard()
-            return
+            self.setup_paths_default()
             
         url = self.url_entry.get().strip()
         if not url:
@@ -809,43 +656,35 @@ summary:
         
         try:
             # 1. 预处理 Markdown
-            if PREPROCESS_PATH.exists():
-                try:
-                    subprocess.run(
-                        [sys.executable, str(PREPROCESS_PATH), file_path_md, escaped_md],
-                        check=True, capture_output=True, text=True
-                    )
-                except subprocess.CalledProcessError as e:
-                    self.write_log(f"   [警告] Markdown 预处理出错 (跳过): {e.stderr}")
-                    escaped_md = file_path_md
-            else:
+            try:
+                import preprocess_md
+                preprocess_md.preprocess_markdown(file_path_md, escaped_md)
+            except Exception as e:
+                self.write_log(f"   [警告] Markdown 预处理出错 (跳过): {e}")
                 escaped_md = file_path_md
 
             # 2. Pandoc 转换并加载黄金模板
+            pandoc_bin = get_pandoc_executable()
             try:
-                pandoc_cmd = ["pandoc", escaped_md, "-o", temp_docx]
+                pandoc_cmd = [pandoc_bin, escaped_md, "-o", temp_docx]
                 if GOLDEN_TEMPLATE.exists():
                     pandoc_cmd.extend(["--reference-doc", str(GOLDEN_TEMPLATE)])
                 subprocess.run(pandoc_cmd, check=True, capture_output=True, text=True)
             except FileNotFoundError:
-                self.write_log("❌ 未检测到系统中的 pandoc 工具，请先配置环境变量！")
+                self.write_log("❌ 运行内置 pandoc 失败！")
                 self.queue.put(("finished", False))
                 return
             except subprocess.CalledProcessError as e:
                 self.write_log(f"   [警告] Pandoc 应用黄金模板失败，正在回退无模板转换: {e.stderr}")
-                subprocess.run(["pandoc", escaped_md, "-o", temp_docx], check=True, capture_output=True, text=True)
+                subprocess.run([pandoc_bin, escaped_md, "-o", temp_docx], check=True, capture_output=True, text=True)
 
             # 3. 精确排版规整 (format_expert)
-            if FORMAT_EXPERT_PATH.exists():
-                try:
-                    subprocess.run(
-                        [sys.executable, str(FORMAT_EXPERT_PATH), temp_docx, "-o", file_path_docx],
-                        check=True, capture_output=True, text=True
-                    )
-                except subprocess.CalledProcessError as e:
-                    self.write_log(f"   [警告] 精确排版工具失败，回退到普通排版 Word: {e.stderr}")
-                    shutil.copy(temp_docx, file_path_docx)
-            else:
+            try:
+                import format_expert
+                formatter = format_expert.DocumentFormatter(temp_docx, file_path_docx, add_pagenum=True)
+                formatter.format()
+            except Exception as e:
+                self.write_log(f"   [警告] 精确排版工具失败，回退到普通排版 Word: {e}")
                 shutil.copy(temp_docx, file_path_docx)
 
             # 清理临时排版产物
