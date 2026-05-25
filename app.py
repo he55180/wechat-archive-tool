@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 微信公众号一键归档系统 GUI 客户端 (通用开源版)
-包含首次运行路径配置向导，以及智能检测与安装 Pandoc 环境向导。
+包含首次运行路径配置向导，以及智能检测与安装 Pandoc 环境向导（支持 winget 失败自动双重兜底）。
 """
 
 import os
@@ -18,6 +18,7 @@ import requests
 import pyperclip
 import html2text
 import winreg
+import webbrowser
 from bs4 import BeautifulSoup
 from datetime import datetime
 from pathlib import Path
@@ -262,11 +263,11 @@ class PandocInstallDialog(tk.Toplevel):
         self.info_label.pack(fill="both", expand=True, padx=25, pady=10)
         
         # 底部操作栏
-        btn_frame = tk.Frame(self, bg="#1e293b")
-        btn_frame.pack(fill="x", side="bottom", pady=22)
+        self.btn_frame = tk.Frame(self, bg="#1e293b")
+        self.btn_frame.pack(fill="x", side="bottom", pady=22)
         
         self.btn_install = tk.Button(
-            btn_frame,
+            self.btn_frame,
             text="一键安装 Pandoc",
             command=self.start_install,
             font=("Microsoft YaHei", 10, "bold"),
@@ -282,7 +283,7 @@ class PandocInstallDialog(tk.Toplevel):
         add_hover(self.btn_install, "#10b981", "#059669")
         
         self.btn_later = tk.Button(
-            btn_frame,
+            self.btn_frame,
             text="稍后安装",
             command=self.later_install,
             font=("Microsoft YaHei", 10),
@@ -302,7 +303,7 @@ class PandocInstallDialog(tk.Toplevel):
         self.btn_later.config(state="disabled", bg="#475569")
         
         self.info_label.config(
-            text="\n\n正在安装，请稍候...\n\n系统正在后台下载并安装 Pandoc 组件，请在弹出的 PowerShell 黑色窗口中查看详细进度与指示。",
+            text="\n\n正在安装，请稍候...\n\n系统正在尝试通过 winget 安装 Pandoc，请在弹出的黑色窗口中查看详细进度。",
             fg="#38bdf8", # Sky 400
             justify="center"
         )
@@ -310,17 +311,17 @@ class PandocInstallDialog(tk.Toplevel):
         try:
             # 自动拉起 PowerShell 执行安装，并在完毕后暂停等待用户按键
             self.install_process = subprocess.Popen(
-                ['powershell', '-Command', 'winget install jgm.pandoc; pause'],
+                ['powershell', '-Command', 'winget install jgm.pandoc; if ($LASTEXITCODE -ne 0) { exit 1 }'],
                 creationflags=subprocess.CREATE_NEW_CONSOLE
             )
             # 开启循环轮询检测
             self.after(2000, self.check_loop)
         except Exception as e:
             messagebox.showerror("执行错误", f"无法唤起安装进程: {e}")
-            self.reset_ui()
+            self.trigger_fallback()
             
     def check_loop(self):
-        # 刷新环境变量重新检查
+        # 刷新环境变量重新检查是否已安装
         if check_pandoc_installed():
             messagebox.showinfo("成功", "安装成功！程序即将启动。")
             self.destroy()
@@ -328,29 +329,61 @@ class PandocInstallDialog(tk.Toplevel):
             
         # 检查 PowerShell 进程是否已经关闭
         if self.install_process and self.install_process.poll() is not None:
-            # 进程已结束但未成功检测到命令，则判定为失败
-            messagebox.showerror("安装失败", "未检测到已成功安装的 Pandoc，请确认您已完成黑色窗口的操作或检查网络连接。")
-            self.reset_ui()
+            # 进程已结束但未成功检测到命令，判定为 winget 失败，自动进入双重兜底
+            self.trigger_fallback()
             return
             
         # 每隔 2 秒循环检测一次
         self.after(2000, self.check_loop)
         
-    def reset_ui(self):
-        self.install_process = None
-        self.btn_install.config(state="normal", bg="#10b981")
-        self.btn_later.config(state="normal", bg="#475569")
-        msg_text = (
-            "检测到您的电脑尚未安装 Pandoc（文档转换工具）\n"
-            "安装非常简单，请按以下步骤操作：\n\n"
-            "第一步：点击下方「一键安装 Pandoc」按钮\n"
-            "第二步：屏幕会弹出一个黑色窗口，等待自动安装\n"
-            "第三步：看到\"安装成功\"字样后关闭黑色窗口\n"
-            "第四步：重新双击打开本程序即可使用\n\n"
-            "全程约 1-2 分钟，请保持网络连接"
-        )
-        self.info_label.config(text=msg_text, fg="#f8fafc", justify="left")
+    def trigger_fallback(self):
+        """自动切换至双重兜底：打开浏览器跳转官方页面并提示手动安装"""
+        # 1. 自动拉起浏览器，打开官方 Releases 页面
+        try:
+            webbrowser.open("https://github.com/jgm/pandoc/releases/latest")
+        except Exception:
+            pass
         
+        # 2. 更改界面文案为手动安装指引
+        msg_text = (
+            "自动安装未成功，已为您打开 Pandoc 下载页面\n\n"
+            "请按以下步骤手动安装：\n"
+            "第一步：点击下载 pandoc-xxx-windows-x86_64.msi\n"
+            "第二步：双击下载的文件，一路点\"下一步\"\n"
+            "第三步：安装完成后重新启动本程序\n\n"
+            "安装包约 30MB，全程约 2 分钟"
+        )
+        self.info_label.config(text=msg_text, fg="#fb923c", justify="left") # Orange 400
+
+        # 3. 改变底部按钮栏为：“我已安装完成，重新启动”
+        for child in self.btn_frame.winfo_children():
+            child.destroy()
+            
+        btn_restart = tk.Button(
+            self.btn_frame,
+            text="我已安装完成，重新启动",
+            command=self.restart_app,
+            font=("Microsoft YaHei", 10, "bold"),
+            bg="#3b82f6", # Blue 500
+            fg="#f8fafc",
+            relief="flat",
+            padx=25,
+            pady=7,
+            activebackground="#2563eb",
+            activeforeground="#f8fafc"
+        )
+        btn_restart.pack(anchor="center")
+        add_hover(btn_restart, "#3b82f6", "#2563eb")
+
+    def restart_app(self):
+        """重新启动整个程序进程 (同时适配源码和打包 EXE 模式)"""
+        try:
+            subprocess.Popen([sys.executable] + sys.argv[1:])
+        except Exception:
+            pass
+        self.parent.destroy()
+        sys.exit(0)
+
     def later_install(self):
         self.destroy()
 
