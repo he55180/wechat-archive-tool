@@ -1,0 +1,437 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Project Copy-Save: Wechat Project Copy-Save (Markdown + Word + 英文文件名)
+功能：读取剪贴板 -> 清洗 -> 翻译文件名 -> 转MD -> 转Word (通用开源版)
+"""
+
+import os
+import sys
+import re
+import time
+import json
+import shutil
+import subprocess
+import requests
+import pyperclip
+import html2text
+from bs4 import BeautifulSoup
+from datetime import datetime
+from pathlib import Path
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+
+# 加载 .env
+from dotenv import load_dotenv
+load_dotenv(Path(__file__).parent / ".env")
+
+# ================= 配置 =================
+BASE = Path(__file__).parent
+PREPROCESS_PATH = BASE / "preprocess_md.py"
+FORMAT_EXPERT_PATH = BASE / "format_expert.py"
+GOLDEN_TEMPLATE = BASE / "黄金模板.docx"
+CONFIG_PATH = BASE / "config.json"
+
+# 请求头
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.60 Safari/537.36 MicroMessenger/7.0.20.1781(0x6700143B) NetType/WIFI MiniProgramEnv/Windows WindowsWechat/WMPF XWEB/6939"
+}
+
+# ================= 路径配置与初始化 =================
+def load_config():
+    if CONFIG_PATH.exists():
+        try:
+            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+def save_config(config_data):
+    try:
+        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+            json.dump(config_data, f, indent=4, ensure_ascii=False)
+    except Exception as e:
+        print(f"写入配置失败: {e}")
+
+config = load_config()
+SAVE_DIR = config.get("word_save_dir", "")
+OBSIDIAN_BASE = config.get("obsidian_base_dir", "")
+
+def initialize_paths():
+    global SAVE_DIR, OBSIDIAN_BASE
+    if not SAVE_DIR:
+        print("="*50)
+        print("    首次启动：微信公众号一键归档系统路径配置")
+        print("="*50)
+        while True:
+            word_path = input("请输入【Word文档】保存目标文件夹的绝对路径 (必填): ").strip()
+            # 如果包含引号，自动去除
+            word_path = word_path.strip('"').strip("'")
+            if word_path:
+                if not os.path.exists(word_path):
+                    try:
+                        os.makedirs(word_path, exist_ok=True)
+                        SAVE_DIR = os.path.abspath(word_path)
+                        break
+                    except Exception as e:
+                        print(f"⚠️ 无法创建该目录: {e}，请重新输入！")
+                else:
+                    SAVE_DIR = os.path.abspath(word_path)
+                    break
+            else:
+                print("⚠️ 此项为必填项！")
+
+        obs_path = input("请输入【Obsidian库】主目录的绝对路径 (可选，直接回车则跳过): ").strip()
+        obs_path = obs_path.strip('"').strip("'")
+        if obs_path:
+            if not os.path.exists(obs_path):
+                try:
+                    os.makedirs(obs_path, exist_ok=True)
+                    OBSIDIAN_BASE = os.path.abspath(obs_path)
+                except Exception as e:
+                    print(f"⚠️ 无法创建该目录: {e}，将跳过同步。")
+                    OBSIDIAN_BASE = ""
+            else:
+                OBSIDIAN_BASE = os.path.abspath(obs_path)
+        else:
+            OBSIDIAN_BASE = ""
+            print("ℹ️ 已选择跳过 Obsidian 归档同步。")
+
+        config["word_save_dir"] = SAVE_DIR
+        config["obsidian_base_dir"] = OBSIDIAN_BASE
+        save_config(config)
+        print("⚙️ 配置已成功保存到 config.json！\n")
+
+# ===== 文章自动分类逻辑 =====
+CATEGORY_RULES = [
+    {
+        "folder": r"1.AI技术汇编",
+        "tag": "AI技术",
+        "keywords": [
+            "AI", "人工智能", "Claude", "Gemini", "GPT", "ChatGPT",
+            "大模型", "LLM", "DeepSeek", "Copilot", "机器学习",
+            "深度学习", "神经网络", "提示词", "Prompt", "Agent",
+            "自动化", "MCP", "Python", "编程", "代码", "开发者",
+            "Antigravity", "Claude Code", "API", "插件", "工具系统",
+            "知识库", "Obsidian", "NotebookLM", "数字化", "智能化"
+        ]
+    },
+    {
+        "folder": r"2.HSE工作笔记库",
+        "tag": "HSE",
+        "keywords": [
+            "HSE", "安全", "危大", "风险", "隐患", "事故",
+            "吊装", "起重", "吊耳", "索具", "卸扣",
+            "脚手架", "模板支架", "高处作业", "临边防护",
+            "机械", "设备", "特种作业", "特种设备",
+            "环保", "环境", "废水", "废气", "噪音", "固废",
+            "职业健康", "劳保", "防护用品", "应急", "消防",
+            "安全培训", "安全管理", "安全规范", "安全检查",
+            "违章", "整改", "监理", "验收"
+        ]
+    },
+    {
+        "folder": r"3.中英文术语库",
+        "tag": "中英文术语",
+        "keywords": [
+            "中英", "英译", "中英文", "对照", "术语",
+            "词汇", "词表", "词汇表", "翻译", "Glossary", "terminology"
+        ]
+    },
+    {
+        "folder": r"4.施工技术汇编",
+        "tag": "施工技术",
+        "keywords": [
+            "施工管理", "施工技术", "施工工艺", "施工方案",
+            "基坑", "深基坑", "土方", "围护",
+            "港口", "码头", "散货", "泊位", "护岸", "海工",
+            "建筑工程", "土建", "主体结构", "混凝土",
+            "钢结构", "钢筋", "焊接", "预埋",
+            "悬挑模架", "爬架", "塔吊", "施工电梯",
+            "测量", "放线", "质量控制", "工程管理",
+            "进度计划", "工期", "竣工", "验收"
+        ]
+    },
+]
+
+DEFAULT_FOLDER = r"公众号归档"
+
+def get_target_folder_and_tags(title: str, content: str = "") -> tuple:
+    """根据标题和正文前200字，判断归档路径和标签"""
+    search_text = title + content[:200]
+    tags = ["待分类"]
+    folder_name = DEFAULT_FOLDER
+    
+    for rule in CATEGORY_RULES:
+        matched = False
+        for kw in rule["keywords"]:
+            if kw.lower() in search_text.lower():
+                folder_name = rule["folder"]
+                if rule["folder"] == r"2.HSE工作笔记库" and "吊装" in search_text:
+                    tags = ["HSE", "吊装"]
+                else:
+                    tags = [rule["tag"]]
+                matched = True
+                break
+        if matched:
+            break
+            
+    if not OBSIDIAN_BASE:
+        return "", tags
+        
+    folder_path = os.path.join(OBSIDIAN_BASE, folder_name)
+    return folder_path, tags
+
+def clean_filename(title):
+    """清理文件名中的非法字符"""
+    return re.sub(r'[\\/:*?"<>|]', '_', title).strip()
+
+def get_session():
+    """创建带有重试机制的会话"""
+    session = requests.Session()
+    retry = Retry(
+        total=3, 
+        read=3, 
+        connect=3, 
+        backoff_factor=1, 
+        status_forcelist=[500, 502, 503, 504]
+    )
+    adapter = HTTPAdapter(max_retries=retry)
+    session.mount('http://', adapter)
+    session.mount('https://', adapter)
+    session.headers.update(HEADERS)
+    return session
+
+def save_article(url):
+    print(f"🔗 检测到链接: {url}")
+    print("⏳ 正在请求文章内容 (已启用重试机制)...")
+    
+    try:
+        session = get_session()
+        resp = session.get(url, timeout=30)
+        if resp.status_code != 200:
+             print(f"❌ 服务器返回错误: {resp.status_code}")
+             return False
+    except Exception as e:
+        print(f"❌ 下载失败: {e}")
+        print("💡 建议：网络可能不稳定，请稍后重试。")
+        return False
+
+    soup = BeautifulSoup(resp.content, "html.parser")
+    
+    # 1. 提取元数据
+    try:
+        title = soup.find("meta", property="og:title")["content"]
+    except:
+        try:
+            title = soup.find(id="activity-name").get_text(strip=True)
+        except:
+            title = "未知标题_" + str(int(time.time()))
+    
+    try:
+        profile_name = soup.find(id="js_name").get_text(strip=True)
+    except:
+        profile_name = "公众号"
+
+    print(f"📄 标题: {title}")
+    
+    title_final = clean_filename(title)
+    
+    # 2. 提取并修复正文
+    content_div = soup.find(id="js_content")
+    if not content_div:
+        content_div = soup.find(class_="rich_media_content")
+        
+    if not content_div:
+        print("⚠️ 未找到正文区域，可能不是标准的公众号文章。")
+        return False
+
+    # 3. 预处理 (Anti-Lazyload)
+    imgs = content_div.find_all("img")
+    count = 0
+    for img in imgs:
+        if img.get("data-src"):
+            img["src"] = img["data-src"]
+            del img["data-src"]
+            count += 1
+    print(f"🖼️ 已保留图片链接: {count} 张")
+
+    # 4. 转换为 Markdown
+    converter = html2text.HTML2Text()
+    converter.ignore_links = False
+    converter.ignore_images = False
+    converter.ignore_tables = False
+    converter.body_width = 0 
+    
+    html_str = str(content_div)
+    md_content = converter.handle(html_str)
+    
+    # 自动获取分类文件夹和标签
+    archive_dir, tags = get_target_folder_and_tags(title, md_content)
+    tags_str = "[" + ", ".join(tags) + "]"
+
+    # 5. 组装最终文档 (顶部自动注入 Front Matter 格式)
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    final_md = f"""---
+title: {title}
+date: {today_str}
+source_url: {url}
+tags: {tags_str}
+summary: 
+---
+
+# {title}
+
+> **来源**: {profile_name}
+> **归档日期**: {today_str}
+> **原文链接**: [{url}]({url})
+
+---
+
+{md_content}
+
+---
+*Created by Project Copy-Save*
+"""
+
+    # 6. 保存文件 (Markdown)
+    if not os.path.exists(SAVE_DIR):
+        os.makedirs(SAVE_DIR)
+
+    filename_base = f"[{today_str}] {title_final}"
+    filename_md = f"{filename_base}.md"
+    filename_docx = f"{filename_base}.docx"
+    
+    file_path_md = os.path.join(SAVE_DIR, filename_md)
+    file_path_docx = os.path.join(SAVE_DIR, filename_docx)
+    
+    if os.path.exists(file_path_md):
+        print("⚠️ 文件已存在，自动覆盖...")
+
+    with open(file_path_md, "w", encoding="utf-8") as f:
+        f.write(final_md)
+        
+    print(f"✅ Markdown 保存成功: {filename_md}")
+    
+    # 7. 三步管线：预处理 → Pandoc → 精确排版
+    print("⏳ 正在生成 Word 文档...")
+    try:
+        escaped_md = file_path_md.replace(".md", "_escaped.md")
+        temp_docx  = file_path_md.replace(".md", "_temp.docx")
+
+        # Step 1: 预处理 Markdown
+        if PREPROCESS_PATH.exists():
+            try:
+                subprocess.run(
+                    [sys.executable, str(PREPROCESS_PATH), file_path_md, escaped_md],
+                    check=True, capture_output=True, text=True
+                )
+                print("   [1/3] Markdown 预处理完成")
+            except subprocess.CalledProcessError as e:
+                print(f"   [1/3] 预处理失败: {e.stderr}")
+                escaped_md = file_path_md
+                print("   ↳ 跳过预处理，使用原始 Markdown")
+        else:
+            escaped_md = file_path_md
+
+        # Step 2: Pandoc 转 docx
+        try:
+            pandoc_cmd = ["pandoc", escaped_md, "-o", temp_docx]
+            if GOLDEN_TEMPLATE.exists():
+                pandoc_cmd.extend(["--reference-doc", str(GOLDEN_TEMPLATE)])
+            subprocess.run(pandoc_cmd, check=True, capture_output=True, text=True)
+            print("   [2/3] Pandoc 转换完成")
+        except FileNotFoundError:
+            print("⚠️ 未找到 pandoc，仅保存 Markdown。安装: choco install pandoc")
+            return True
+        except subprocess.CalledProcessError as e:
+            print(f"   [2/3] Pandoc 失败: {e.stderr}")
+            # 无模板重试
+            pandoc_cmd = ["pandoc", escaped_md, "-o", temp_docx]
+            subprocess.run(pandoc_cmd, check=True, capture_output=True, text=True)
+            print("   ↳ 无模板重试成功")
+
+        # Step 3: format_expert.py 精确排版
+        if FORMAT_EXPERT_PATH.exists():
+            try:
+                subprocess.run(
+                    [sys.executable, str(FORMAT_EXPERT_PATH), temp_docx, "-o", file_path_docx],
+                    check=True, capture_output=True, text=True
+                )
+                print("   [3/3] 排版处理完成")
+            except subprocess.CalledProcessError as e:
+                print(f"   [3/3] 排版失败: {e.stderr}")
+                shutil.copy(temp_docx, file_path_docx)
+                print("   ↳ 回退到基础 Pandoc 版本")
+        else:
+            shutil.copy(temp_docx, file_path_docx)
+
+        # 清理临时文件
+        for f in [escaped_md, temp_docx]:
+            if os.path.exists(f) and f != file_path_md:
+                os.remove(f)
+
+        print(f"✅ Word 保存成功: {filename_docx}")
+        print(f"📍 文件位置: {SAVE_DIR}")
+
+        # 根据标题和正文关键词，动态判断目标分类归档目录
+        if OBSIDIAN_BASE:
+            try:
+                if not os.path.exists(archive_dir):
+                    os.makedirs(archive_dir)
+                archive_md_path = os.path.join(archive_dir, filename_md)
+                shutil.copy2(file_path_md, archive_md_path)
+                print(f"📂 已同步复制 Markdown 中间文件至归档目录: {archive_md_path}")
+
+                # 成功复制到归档目录后，删除原输出目录下的 md 临时文件
+                if os.path.exists(archive_md_path) and os.path.exists(file_path_md):
+                    os.remove(file_path_md)
+            except Exception as e:
+                print(f"⚠️ 同步归档 Obsidian 失败: {e}")
+        else:
+            print("ℹ️ 未启用 Obsidian 归档，跳过同步。")
+
+    except Exception as e:
+        print(f"❌ 转换出错: {e}")
+        return False
+
+    return True
+
+def main():
+    print("="*40)
+    print("      Project Copy-Save | 一键归档 (通用开源版)")
+    print("="*40)
+    
+    initialize_paths()
+    
+    try:
+        content = pyperclip.paste()
+    except Exception as e:
+        print(f"❌ 读取剪贴板失败: {e}")
+        return
+
+    if not content:
+        print("📭 剪贴板为空！")
+        return
+        
+    url_match = re.search(r'(https://mp\.weixin\.qq\.com/s/[a-zA-Z0-9_\-]+)', content)
+    
+    if not url_match:
+         if "mp.weixin.qq.com" in content and "http" in content:
+             url = content.strip()
+         else:
+             print("📭 未发现有效链接。")
+             return
+    else:
+        url = url_match.group(0)
+
+    success = save_article(url)
+    
+    if success:
+        time.sleep(2)
+    else:
+        print("\n运行未完全成功，请检查错误提示...")
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,17 @@
+# Project Copy-Save + PureFocus
+requests>=2.28
+beautifulsoup4>=4.11
+pyperclip>=1.8
+python-dotenv>=1.0
+html2text>=2024.2
+# daily_brief.py 依赖
+selenium>=4.15
+webdriver-manager>=4.0
+# fetch_news.py 依赖
+google-generativeai>=0.8
+feedparser>=6.0
+python-dateutil>=2.8
+tenacity>=8.0
+# Word 排版管线（需单独安装 pandoc）
+lxml>=4.9
+python-docx>=0.8.11

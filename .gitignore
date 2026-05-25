@@ -1,0 +1,27 @@
+# Byte-compiled / optimized / DLL support
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Environments
+.env
+.env.local
+.env.development
+.env.production
+.env.staging
+
+# Virtual Environments
+venv/
+ENV/
+env/
+
+# Project configuration and local outputs
+config.json
+output/
+reports/
+*.log
+*.docx_escaped.md
+*.docx_temp.docx
+_escaped.md
+_temp.docx
