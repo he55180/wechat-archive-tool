@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 微信公众号一键归档系统 GUI 客户端 (通用开源版)
-首次启动会自动提示配置 Word 和 Obsidian 保存路径，并保存到 config.json 中。
+包含首次运行路径配置向导，以及智能检测与安装 Pandoc 环境向导。
 """
 
 import os
@@ -17,6 +17,7 @@ import queue
 import requests
 import pyperclip
 import html2text
+import winreg
 from bs4 import BeautifulSoup
 from datetime import datetime
 from pathlib import Path
@@ -167,6 +168,192 @@ def save_config(config):
     except Exception as e:
         print(f"写入配置文件失败: {e}")
 
+# ================= 动态环境变量检测逻辑 =================
+def refresh_path():
+    """从 Windows 注册表动态刷新当前进程的 PATH 环境变量，避免进程重启"""
+    try:
+        # 读取系统级 PATH
+        sys_path = ""
+        try:
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment") as key:
+                sys_path, _ = winreg.QueryValueEx(key, "PATH")
+        except Exception:
+            pass
+
+        # 读取用户级 PATH
+        user_path = ""
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Environment") as key:
+                user_path, _ = winreg.QueryValueEx(key, "PATH")
+        except Exception:
+            pass
+
+        combined = sys_path
+        if user_path:
+            combined = combined + ";" + user_path
+            
+        os.environ["PATH"] = os.path.expandvars(combined)
+    except Exception as e:
+        print(f"动态更新环境变量 PATH 失败: {e}")
+
+def check_pandoc_installed():
+    """检测系统是否安装了 pandoc"""
+    refresh_path()
+    return shutil.which("pandoc") is not None
+
+# ================= Pandoc 引导安装对话框 =================
+class PandocInstallDialog(tk.Toplevel):
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.parent = parent
+        self.title("环境配置引导")
+        self.geometry("500x400")
+        self.resizable(False, False)
+        self.configure(bg="#1e293b")
+        
+        # 模态交互
+        self.transient(parent)
+        self.grab_set()
+        
+        # 窗口居中
+        screen_width = self.winfo_screenwidth()
+        screen_height = self.winfo_screenheight()
+        x = (screen_width - 500) // 2
+        y = (screen_height - 400) // 2
+        self.geometry(f"500x400+{x}+{y}")
+        
+        self.install_process = None
+        self.setup_ui()
+        
+    def setup_ui(self):
+        # 标题提示
+        tk.Label(
+            self, 
+            text="⚠️ 未检测到 Pandoc 环境", 
+            font=("Microsoft YaHei", 13, "bold"), 
+            bg="#1e293b", 
+            fg="#f43f5e" # Rose 500
+        ).pack(pady=(20, 10))
+        
+        # 傻瓜化说明文本
+        msg_text = (
+            "检测到您的电脑尚未安装 Pandoc（文档转换工具）\n"
+            "安装非常简单，请按以下步骤操作：\n\n"
+            "第一步：点击下方「一键安装 Pandoc」按钮\n"
+            "第二步：屏幕会弹出一个黑色窗口，等待自动安装\n"
+            "第三步：看到\"安装成功\"字样后关闭黑色窗口\n"
+            "第四步：重新双击打开本程序即可使用\n\n"
+            "全程约 1-2 分钟，请保持网络连接"
+        )
+        
+        self.info_label = tk.Label(
+            self,
+            text=msg_text,
+            font=("Microsoft YaHei", 10),
+            bg="#0f172a", # Slate 900
+            fg="#f8fafc", # Slate 50
+            justify="left",
+            anchor="nw",
+            padx=18,
+            pady=18,
+            relief="flat",
+            wraplength=440
+        )
+        self.info_label.pack(fill="both", expand=True, padx=25, pady=10)
+        
+        # 底部操作栏
+        btn_frame = tk.Frame(self, bg="#1e293b")
+        btn_frame.pack(fill="x", side="bottom", pady=22)
+        
+        self.btn_install = tk.Button(
+            btn_frame,
+            text="一键安装 Pandoc",
+            command=self.start_install,
+            font=("Microsoft YaHei", 10, "bold"),
+            bg="#10b981", # Emerald 500
+            fg="#f8fafc",
+            relief="flat",
+            padx=15,
+            pady=6,
+            activebackground="#059669",
+            activeforeground="#f8fafc"
+        )
+        self.btn_install.pack(side="left", padx=(70, 20), expand=True)
+        add_hover(self.btn_install, "#10b981", "#059669")
+        
+        self.btn_later = tk.Button(
+            btn_frame,
+            text="稍后安装",
+            command=self.later_install,
+            font=("Microsoft YaHei", 10),
+            bg="#475569", # Slate 600
+            fg="#f8fafc",
+            relief="flat",
+            padx=20,
+            pady=6,
+            activebackground="#334155",
+            activeforeground="#f8fafc"
+        )
+        self.btn_later.pack(side="left", padx=(20, 70), expand=True)
+        add_hover(self.btn_later, "#475569", "#334155")
+        
+    def start_install(self):
+        self.btn_install.config(state="disabled", bg="#475569")
+        self.btn_later.config(state="disabled", bg="#475569")
+        
+        self.info_label.config(
+            text="\n\n正在安装，请稍候...\n\n系统正在后台下载并安装 Pandoc 组件，请在弹出的 PowerShell 黑色窗口中查看详细进度与指示。",
+            fg="#38bdf8", # Sky 400
+            justify="center"
+        )
+        
+        try:
+            # 自动拉起 PowerShell 执行安装，并在完毕后暂停等待用户按键
+            self.install_process = subprocess.Popen(
+                ['powershell', '-Command', 'winget install jgm.pandoc; pause'],
+                creationflags=subprocess.CREATE_NEW_CONSOLE
+            )
+            # 开启循环轮询检测
+            self.after(2000, self.check_loop)
+        except Exception as e:
+            messagebox.showerror("执行错误", f"无法唤起安装进程: {e}")
+            self.reset_ui()
+            
+    def check_loop(self):
+        # 刷新环境变量重新检查
+        if check_pandoc_installed():
+            messagebox.showinfo("成功", "安装成功！程序即将启动。")
+            self.destroy()
+            return
+            
+        # 检查 PowerShell 进程是否已经关闭
+        if self.install_process and self.install_process.poll() is not None:
+            # 进程已结束但未成功检测到命令，则判定为失败
+            messagebox.showerror("安装失败", "未检测到已成功安装的 Pandoc，请确认您已完成黑色窗口的操作或检查网络连接。")
+            self.reset_ui()
+            return
+            
+        # 每隔 2 秒循环检测一次
+        self.after(2000, self.check_loop)
+        
+    def reset_ui(self):
+        self.install_process = None
+        self.btn_install.config(state="normal", bg="#10b981")
+        self.btn_later.config(state="normal", bg="#475569")
+        msg_text = (
+            "检测到您的电脑尚未安装 Pandoc（文档转换工具）\n"
+            "安装非常简单，请按以下步骤操作：\n\n"
+            "第一步：点击下方「一键安装 Pandoc」按钮\n"
+            "第二步：屏幕会弹出一个黑色窗口，等待自动安装\n"
+            "第三步：看到\"安装成功\"字样后关闭黑色窗口\n"
+            "第四步：重新双击打开本程序即可使用\n\n"
+            "全程约 1-2 分钟，请保持网络连接"
+        )
+        self.info_label.config(text=msg_text, fg="#f8fafc", justify="left")
+        
+    def later_install(self):
+        self.destroy()
+
 # ================= GUI 主窗口 =================
 class WechatGrabberApp(tk.Tk):
     def __init__(self):
@@ -205,16 +392,24 @@ class WechatGrabberApp(tk.Tk):
         self.word_save_dir = self.config.get("word_save_dir", "")
         self.obsidian_base_dir = self.config.get("obsidian_base_dir", "")
         
+        # 启动后检测是否包含 Pandoc
+        if not check_pandoc_installed():
+            self.after(300, self.show_pandoc_dialog)
+            
         # 如果路径未设置，启动选择向导
         if not self.word_save_dir:
-            self.after(500, self.setup_paths_wizard)
+            self.after(600, self.setup_paths_wizard)
         else:
             self.write_log("⚙️ 配置已加载:")
             self.write_log(f"- Word 保存路径: {self.word_save_dir}")
             self.write_log(f"- Obsidian 归档路径: {self.obsidian_base_dir or '未启用'}")
             
         # 启动后延迟读取剪贴板并尝试填入链接
-        self.after(800, self.auto_paste_clipboard)
+        self.after(1000, self.auto_paste_clipboard)
+
+    def show_pandoc_dialog(self):
+        """展示 Pandoc 傻瓜化引导弹窗"""
+        PandocInstallDialog(self)
 
     def setup_ui(self):
         # 1. 顶部标题栏
@@ -438,7 +633,11 @@ class WechatGrabberApp(tk.Tk):
 
     def start_capture(self):
         """开始执行抓取工作"""
-        # 兜底：再次判断路径是否已配置
+        # 确保 Pandoc 环境在点击保存时依然畅通检测
+        if not check_pandoc_installed():
+            self.show_pandoc_dialog()
+            return
+
         if not self.word_save_dir:
             self.setup_paths_wizard()
             return
