@@ -1,6 +1,6 @@
 # 微信公众号一键归档系统 (WeChat Archive Tool)
 
-![版本](https://img.shields.io/badge/%E7%89%88%E6%9C%AC-v1.0.0-green)
+![版本](https://img.shields.io/badge/%E7%89%88%E6%9C%AC-v2.0.0-green)
 ![平台](https://img.shields.io/badge/%E5%B9%B3%E5%8F%B0-Windows-blue)
 ![免安装](https://img.shields.io/badge/%E7%BB%BF%E8%89%B2-%E5%85%8D%E5%AE%89%E8%A3%85-brightgreen)
 
@@ -92,3 +92,10 @@
 
 **Q：可以在 Mac 上用吗？**  
 **A**：目前打包的免安装绿色版与本地解压版仅支持 Windows 64位系统。Mac 用户如有需求，建议通过源码方式安装依赖并运行。
+
+## 📋 版本历史
+
+| 版本 | 日期 | 说明 |
+|------|------|------|
+| v1.0.0 | 2026-05-xx | 首发：CLI一键归档 + GB/T排版引擎 + 黄金模板 |
+| v2.0.0 | 2026-06-02 | GUI图形界面 + 标点修正引擎 + 批量处理 + 桌面图标 + exe打包 |
