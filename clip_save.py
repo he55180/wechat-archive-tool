@@ -57,6 +57,7 @@ def save_config(config_data):
 config = load_config()
 SAVE_DIR = config.get("word_save_dir", "")
 OBSIDIAN_BASE = config.get("obsidian_base_dir", "")
+DOCX_ARCHIVE_DIR = config.get("docx_archive_dir", "")
 
 def initialize_paths():
     global SAVE_DIR, OBSIDIAN_BASE
@@ -91,48 +92,31 @@ CATEGORY_RULES = [
         "folder": r"1.AI技术汇编",
         "tag": "AI技术",
         "keywords": [
-            "AI", "人工智能", "Claude", "Gemini", "GPT", "ChatGPT",
-            "大模型", "LLM", "DeepSeek", "Copilot", "机器学习",
-            "深度学习", "神经网络", "提示词", "Prompt", "Agent",
-            "自动化", "MCP", "Python", "编程", "代码", "开发者",
-            "Antigravity", "Claude Code", "API", "插件", "工具系统",
-            "知识库", "Obsidian", "NotebookLM", "数字化", "智能化"
+            "AI", "大模型", "Claude", "Gemini", "GPT", "人工智能", "机器学习",
+            "算法", "编程", "Python", "自动化工具", "API"
         ]
     },
     {
         "folder": r"2.HSE工作笔记库",
         "tag": "HSE",
         "keywords": [
-            "HSE", "安全", "危大", "风险", "隐患", "事故",
-            "吊装", "起重", "吊耳", "索具", "卸扣",
-            "脚手架", "模板支架", "高处作业", "临边防护",
-            "机械", "设备", "特种作业", "特种设备",
-            "环保", "环境", "废水", "废气", "噪音", "固废",
-            "职业健康", "劳保", "防护用品", "应急", "消防",
-            "安全培训", "安全管理", "安全规范", "安全检查",
-            "违章", "整改", "监理", "验收"
+            "安全", "吊装", "危大", "风险", "事故", "隐患", "整改",
+            "监理", "应急", "消防", "职业健康", "安全培训", "安全生产", "防护"
         ]
     },
     {
         "folder": r"3.中英文术语库",
         "tag": "中英文术语",
         "keywords": [
-            "中英", "英译", "中英文", "对照", "术语",
-            "词汇", "词表", "词汇表", "翻译", "Glossary", "terminology"
+            "术语", "翻译", "对照", "词表", "双语", "词汇", "缩略语", "词典"
         ]
     },
     {
         "folder": r"4.施工技术汇编",
         "tag": "施工技术",
         "keywords": [
-            "施工管理", "施工技术", "施工工艺", "施工方案",
-            "基坑", "深基坑", "土方", "围护",
-            "港口", "码头", "散货", "泊位", "护岸", "海工",
-            "建筑工程", "土建", "主体结构", "混凝土",
-            "钢结构", "钢筋", "焊接", "预埋",
-            "悬挑模架", "爬架", "塔吊", "施工电梯",
-            "测量", "放线", "质量控制", "工程管理",
-            "进度计划", "工期", "竣工", "验收"
+            "施工", "基坑", "钢结构", "脚手架", "高处作业", "模板工程",
+            "港口", "码头", "桩基", "混凝土", "土方", "防水", "机电安装", "施工方案"
         ]
     },
 ]
@@ -365,6 +349,20 @@ summary:
                 print(f"⚠️ 同步归档 Obsidian 失败: {e}")
         else:
             print("ℹ️ 未启用 Obsidian 归档，跳过同步。")
+
+        if DOCX_ARCHIVE_DIR:
+            try:
+                if not os.path.exists(DOCX_ARCHIVE_DIR):
+                    os.makedirs(DOCX_ARCHIVE_DIR)
+                archive_docx_path = os.path.join(DOCX_ARCHIVE_DIR, filename_docx)
+                shutil.copy2(file_path_docx, archive_docx_path)
+                print(f" 已同步复制 Word 文件至归档目录: {archive_docx_path}")
+                if os.path.exists(archive_docx_path) and os.path.exists(file_path_docx):
+                    os.remove(file_path_docx)
+            except Exception as e:
+                print(f" 同步归档 Word 文件失败: {e}")
+        else:
+            print("ℹ 未启用 Word 归档，跳过同步。")
 
     except Exception as e:
         print(f"❌ 转换出错: {e}")

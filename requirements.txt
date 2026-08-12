@@ -1,17 +1,11 @@
-# Project Copy-Save + PureFocus
+# 微信公众号一键归档系统 - 核心依赖
 requests>=2.28
 beautifulsoup4>=4.11
 pyperclip>=1.8
 python-dotenv>=1.0
 html2text>=2024.2
-# daily_brief.py 依赖
-selenium>=4.15
-webdriver-manager>=4.0
-# fetch_news.py 依赖
-google-generativeai>=0.8
-feedparser>=6.0
-python-dateutil>=2.8
-tenacity>=8.0
-# Word 排版管线（pandoc 已内置于打包程序；源码运行时需将 pandoc.exe 放同级目录或系统 PATH）
 lxml>=4.9
 python-docx>=0.8.11
+
+# Pandoc：源码运行需自行安装（winget install jgm.pandoc）并确保在系统 PATH 中，
+# 或将 pandoc.exe 放置于项目同级目录。
