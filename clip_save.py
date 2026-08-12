@@ -125,14 +125,21 @@ DEFAULT_FOLDER = r"公众号归档"
 
 def get_target_folder_and_tags(title: str, content: str = "") -> tuple:
     """根据标题和正文前200字，判断归档路径和标签"""
-    search_text = title + content[:200]
+    raw_text = title + content[:200]
+    # 剔除 Markdown 图片链接语法（![]()），避免链接乱码子串误触发关键词匹配
+    search_text = re.sub(r'!\[.*?\]\([^)]*\)', '', raw_text)
     tags = ["待分类"]
     folder_name = DEFAULT_FOLDER
     
     for rule in CATEGORY_RULES:
         matched = False
         for kw in rule["keywords"]:
-            if kw.lower() in search_text.lower():
+            # 对纯大写短词（如 AI）使用全词正则匹配，避免被英文单词子串误伤
+            if kw == "AI":
+                kw_matched = bool(re.search(r'\bAI\b', search_text))
+            else:
+                kw_matched = kw.lower() in search_text.lower()
+            if kw_matched:
                 folder_name = rule["folder"]
                 if rule["folder"] == r"2.HSE工作笔记库" and "吊装" in search_text:
                     tags = ["HSE", "吊装"]
@@ -336,8 +343,7 @@ summary:
         # 根据标题和正文关键词，动态判断目标分类归档目录
         if OBSIDIAN_BASE:
             try:
-                if not os.path.exists(archive_dir):
-                    os.makedirs(archive_dir)
+                os.makedirs(archive_dir, exist_ok=True)
                 archive_md_path = os.path.join(archive_dir, filename_md)
                 shutil.copy2(file_path_md, archive_md_path)
                 print(f"📂 已同步复制 Markdown 中间文件至归档目录: {archive_md_path}")
@@ -352,8 +358,7 @@ summary:
 
         if DOCX_ARCHIVE_DIR:
             try:
-                if not os.path.exists(DOCX_ARCHIVE_DIR):
-                    os.makedirs(DOCX_ARCHIVE_DIR)
+                os.makedirs(DOCX_ARCHIVE_DIR, exist_ok=True)
                 archive_docx_path = os.path.join(DOCX_ARCHIVE_DIR, filename_docx)
                 shutil.copy2(file_path_docx, archive_docx_path)
                 print(f" 已同步复制 Word 文件至归档目录: {archive_docx_path}")
