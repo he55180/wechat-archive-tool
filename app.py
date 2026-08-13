@@ -11,6 +11,7 @@ import re
 import time
 import json
 import shutil
+import logging
 import subprocess
 import threading
 import queue
@@ -26,6 +27,34 @@ from datetime import datetime
 from pathlib import Path
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+
+# ── 可选 AI 增值模块（导入失败时静默降级，不影响主流程） ───────────
+try:
+    from ai_summary import generate_summary
+except ImportError:
+    def generate_summary(content, config):
+        return None
+
+try:
+    from ai_classify import CircuitBreaker, classify_with_ai, RuleResult
+    _AI_CLASSIFY_AVAILABLE = True
+except ImportError:
+    _AI_CLASSIFY_AVAILABLE = False
+    class CircuitBreaker:
+        def __init__(self, **kw): pass
+        def is_open(self): return True
+    class RuleResult:
+        def __init__(self, *a, **kw): pass
+    def classify_with_ai(*a, **kw):
+        return a[3].best_guess if len(a) > 3 else ("", [])
+
+# 基础日志配置（tkinter 运行前生效，方便 AI 模块输出 warning）
+logging.basicConfig(
+    level=logging.WARNING,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%H:%M:%S",
+)
+log = logging.getLogger(__name__)
 
 import tkinter as tk
 from tkinter import messagebox, filedialog
@@ -123,37 +152,66 @@ def get_session():
     return session
 
 def get_target_folder_and_tags(obsidian_base, title: str, content: str = "") -> tuple:
-    """根据标题和正文前200字判断自动分类文件夹和对应标签"""
+    """根据标题和正文前200字判断自动分类文件夹和对应标签（保持原有行为不变）"""
+    rule_result = _classify_by_rules(title, content)
+    if not obsidian_base:
+        return "", rule_result.tags
+    folder_path = os.path.join(obsidian_base, rule_result.category)
+    return folder_path, rule_result.tags
+
+
+def _classify_by_rules(title: str, content: str = "") -> "RuleResult":
+    """
+    纯规则分类引擎（最高分胜出），返回 RuleResult 对象（含置信度）。
+
+    算法：遍历所有类目，取命中关键词数最多的那个（而非第一个命中的），
+    彻底消除关键词表顺序对分类结果的影响。
+
+    置信度判断（与 ai_classify.RuleResult 保持同步）：
+    - 命中关键词 >= 1 个 → is_confident=True（规则有把握，AI 不介入）
+    - 完全未命中         → is_confident=False，category=DEFAULT_FOLDER（触发 AI）
+    """
     raw_text = title + content[:200]
     # 剔除 Markdown 图片链接语法（![]()），避免链接乱码子串误触发关键词匹配
     search_text = re.sub(r'!\[.*?\]\([^)]*\)', '', raw_text)
-    tags = ["待分类"]
-    folder_name = DEFAULT_FOLDER
-    
+
+    best_rule   = None
+    best_hits   = 0
+    best_matched = []
+
     for rule in CATEGORY_RULES:
-        matched = False
+        matched = []
         for kw in rule["keywords"]:
             # 对纯大写短词（如 AI）使用全词正则匹配，避免被英文单词子串误伤
             if kw == "AI":
-                kw_matched = bool(re.search(r'\bAI\b', search_text))
-            else:
-                kw_matched = kw.lower() in search_text.lower()
-            if kw_matched:
-                folder_name = rule["folder"]
-                if rule["folder"] == r"2.HSE工作笔记库" and "吊装" in search_text:
-                    tags = ["HSE", "吊装"]
-                else:
-                    tags = [rule["tag"]]
-                matched = True
-                break
-        if matched:
-            break
-            
-    if not obsidian_base:
-        return "", tags
-        
-    folder_path = os.path.join(obsidian_base, folder_name)
-    return folder_path, tags
+                if re.search(r'\bAI\b', search_text):
+                    matched.append(kw)
+            elif kw.lower() in search_text.lower():
+                matched.append(kw)
+        if len(matched) > best_hits:
+            best_hits   = len(matched)
+            best_rule   = rule
+            best_matched = matched
+
+    if best_rule is None:
+        folder_name = DEFAULT_FOLDER
+        tags = ["待分类"]
+        hit_count = 0
+    else:
+        folder_name = best_rule["folder"]
+        hit_count   = best_hits
+        if best_rule["folder"] == r"2.HSE工作笔记库" and "吊装" in search_text:
+            tags = ["HSE", "吊装"]
+        else:
+            tags = [best_rule["tag"]]
+
+    return RuleResult(
+        category=folder_name,
+        best_guess=folder_name,
+        tags=tags,
+        hit_count=hit_count,
+    )
+
 
 def add_hover(widget, normal_bg, hover_bg):
     """为 Tkinter 控件绑定悬停高亮动画效果"""
@@ -264,6 +322,10 @@ class WechatGrabberApp(tk.Tk):
         self.word_save_dir = self.config.get("word_save_dir", "")
         self.obsidian_base_dir = self.config.get("obsidian_base_dir", "")
         
+        # 初始化 AI 分类熔断器（每次启动程序重置，不持久化）
+        cb_threshold = self.config.get("ai_classify", {}).get("circuit_breaker_threshold", 5)
+        self._circuit_breaker = CircuitBreaker(threshold=cb_threshold)
+
         # 如果路径未设置，直接在桌面创建默认文件夹并静默配置
         if not self.word_save_dir:
             self.setup_paths_default()
@@ -626,24 +688,55 @@ class WechatGrabberApp(tk.Tk):
         converter.body_width = 0
         md_content = converter.handle(str(content_div))
 
-        # 判断自动分类文件夹和对应标签
-        archive_dir, tags = get_target_folder_and_tags(self.obsidian_base_dir, title, md_content)
-        if self.obsidian_base_dir:
-            folder_basename = os.path.basename(archive_dir)
-            self.write_log(f"分类至：{folder_basename}文件夹")
+        # ── 规则分类（保持原有逻辑） ───────────────────────────────
+        rule_result = _classify_by_rules(title, md_content)
+
+        # ── AI 增强分类（可选，仅在规则拿不准时触发） ────────────────
+        ai_classify_cfg = self.config.get("ai_classify", {})
+        if ai_classify_cfg.get("enabled") and _AI_CLASSIFY_AVAILABLE:
+            # 合法分类列表（文件夹名）
+            valid_cats = [r["folder"] for r in CATEGORY_RULES]
+            final_folder, tags = classify_with_ai(
+                title, md_content,
+                rule_result, self.config,
+                self._circuit_breaker,
+                valid_cats,
+            )
         else:
+            final_folder = rule_result.category
+            tags = rule_result.tags
+
+        # 根据最终分类文件夹确定归档路径
+        if self.obsidian_base_dir:
+            archive_dir = os.path.join(self.obsidian_base_dir, final_folder)
+            folder_basename = os.path.basename(archive_dir)
+            source_label = "AI" if (ai_classify_cfg.get("enabled") and not rule_result.is_confident) else "规则"
+            self.write_log(f"分类至：{folder_basename}文件夹（{source_label}）")
+        else:
+            archive_dir = ""
             self.write_log("ℹ️ 未启用 Obsidian 归档，跳过自动分类匹配")
+
+        # ── AI 摘要生成（可选，在归档前生成，失败不影响归档） ─────────
+        ai_summary_cfg = self.config.get("ai_summary", {})
+        summary_text = ""
+        if ai_summary_cfg.get("enabled") and ai_summary_cfg.get("api_key", "").strip():
+            self.write_log("🤖 正在生成 AI 摘要...")
+            summary_text = generate_summary(md_content, self.config) or ""
+            if summary_text:
+                self.write_log(f"✅ AI 摘要已生成: {summary_text[:40]}{'...' if len(summary_text) > 40 else ''}")
+            else:
+                self.write_log("⚠️ AI 摘要生成失败或已跳过，摘要字段留空")
 
         # 生成 Front Matter 注入的 markdown
         today_str = datetime.now().strftime("%Y-%m-%d")
         tags_str = "[" + ", ".join(tags) + "]"
-        
+
         final_md = f"""---
 title: {title}
 date: {today_str}
 source_url: {url}
 tags: {tags_str}
-summary:
+summary: {summary_text}
 ---
 
 # {title}
