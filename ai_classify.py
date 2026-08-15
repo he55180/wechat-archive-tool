@@ -51,11 +51,12 @@ class RuleResult:
         命中关键词数量（用于置信度判断）
     """
 
-    def __init__(self, category: str, best_guess: str, tags: list, hit_count: int):
-        self.category    = category
-        self.best_guess  = best_guess
-        self.tags        = tags
-        self.hit_count   = hit_count
+    def __init__(self, category: str, best_guess: str, tags: list, hit_count: int, matched_keywords: list = None):
+        self.category         = category
+        self.best_guess       = best_guess
+        self.tags             = tags
+        self.hit_count        = hit_count
+        self.matched_keywords = matched_keywords if matched_keywords is not None else []
         # 命中 >= 1 个关键词即视为"有把握"，只有完全0命中才触发AI二次判断
         self.is_confident = hit_count >= 1
 

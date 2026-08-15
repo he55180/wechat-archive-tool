@@ -210,6 +210,7 @@ def _classify_by_rules(title: str, content: str = "") -> "RuleResult":
         best_guess=folder_name,
         tags=tags,
         hit_count=hit_count,
+        matched_keywords=best_matched,
     )
 
 
@@ -711,7 +712,8 @@ class WechatGrabberApp(tk.Tk):
             archive_dir = os.path.join(self.obsidian_base_dir, final_folder)
             folder_basename = os.path.basename(archive_dir)
             source_label = "AI" if (ai_classify_cfg.get("enabled") and not rule_result.is_confident) else "规则"
-            self.write_log(f"分类至：{folder_basename}文件夹（{source_label}）")
+            hit_info = f"，命中: {rule_result.matched_keywords}" if rule_result.matched_keywords else ""
+            self.write_log(f"分类至：{folder_basename}文件夹（{source_label}{hit_info}）")
         else:
             archive_dir = ""
             self.write_log("ℹ️ 未启用 Obsidian 归档，跳过自动分类匹配")
